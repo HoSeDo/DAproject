@@ -2,60 +2,192 @@
 <html lang="ko">
 <head>
   <meta charset="UTF-8" />
-  <title>캠퍼스 지도</title>
+  <title>카카오 지도 - 최단 경로</title>
   <style>
-    #map {
-      width: 100%;
-      height: 100vh;
-    }
+    #map { width: 100%; height: 500px; }
+    #result { margin-top: 20px; font-size: 16px; }
+    button, select { margin: 10px 5px; padding: 6px 12px; }
   </style>
-  <script type="text/javascript" src="//dapi.kakao.com/v2/maps/sdk.js?appkey=b08bb0d7029cff05ee0ab4ab533493ce"></script>
+  <script src="https://dapi.kakao.com/v2/maps/sdk.js?appkey=b08bb0d7029cff05ee0ab4ab533493ce&autoload=true"></script>
 </head>
 <body>
+  <h2>캠퍼스 최단 경로 (다익스트라)</h2>
+
+  <div>
+    출발:
+    <select id="startNode"></select>
+    도착:
+    <select id="endNode"></select>
+    <button onclick="runDijkstraFromSelect()">최단 경로 계산</button>
+    <button onclick="toggleMarkers()">마커 보이기/숨기기</button>
+    <button onclick="toggleLines()">경로 보이기/숨기기</button>
+  </div>
+
   <div id="map"></div>
+  <div id="result"></div>
 
   <script>
-    // 지도 생성
-    const mapContainer = document.getElementById('map');
-    const mapOption = {
+    const map = new kakao.maps.Map(document.getElementById('map'), {
       center: new kakao.maps.LatLng(36.839480, 127.184666),
       level: 4
+    });
+
+    // 1. 노드 정의 (예시 데이터, 필요시 수정)
+    const nodes = {
+      A: { lat: 36.839480, lng: 127.184666, isCore: true },
+      B: { lat: 36.840200, lng: 127.185000, isCore: false },
+      C: { lat: 36.838800, lng: 127.183500, isCore: true },
+      D: { lat: 36.839900, lng: 127.183000, isCore: false },
+      E: { lat: 36.840600, lng: 127.186200, isCore: true },
+      F: { lat: 36.841000, lng: 127.184000, isCore: false }
     };
-    const map = new kakao.maps.Map(mapContainer, mapOption);
 
-    // 마커 스타일
-    const coreMarkerImage = new kakao.maps.MarkerImage(
-      'https://t1.daumcdn.net/localimg/localimages/07/mapapidoc/marker_red.png',
-      new kakao.maps.Size(32, 32)
-    );
-    const subMarkerImage = new kakao.maps.MarkerImage(
-      'https://t1.daumcdn.net/localimg/localimages/07/mapapidoc/marker_blue.png',
-      new kakao.maps.Size(24, 24)
-    );
+    // 2. 하버사인 공식 기반 거리 계산 함수
+    Math.toRadians = deg => deg * (Math.PI / 180);
 
-    // JSON 불러오기
-    fetch('graph.json')
-      .then(res => res.json())
-      .then(data => {
-        for (const [name, info] of Object.entries(data)) {
-          const position = new kakao.maps.LatLng(info.lat, info.lng);
+    function getDistance(lat1, lon1, lat2, lon2) {
+      const R = 6378137;
+      const dLat = Math.toRadians(lat2 - lat1);
+      const dLon = Math.toRadians(lon2 - lon1);
+      const a = Math.sin(dLat / 2) ** 2 +
+                Math.cos(Math.toRadians(lat1)) *
+                Math.cos(Math.toRadians(lat2)) *
+                Math.sin(dLon / 2) ** 2;
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      return Math.round(R * c); // meters
+    }
 
-          const marker = new kakao.maps.Marker({
-            map,
-            position,
-            title: name,
-            image: info.isCore ? coreMarkerImage : subMarkerImage
-          });
+    // 3. 거리 300m 이내만 연결
+    const MAX_DISTANCE = 300;
+    const graph = {};
+    const keys = Object.keys(nodes);
 
-          const infowindow = new kakao.maps.InfoWindow({
-            content: `<div style="padding:5px;font-size:13px;">${name}</div>`
-          });
-
-          kakao.maps.event.addListener(marker, 'mouseover', () => infowindow.open(map, marker));
-          kakao.maps.event.addListener(marker, 'mouseout', () => infowindow.close());
+    for (let i = 0; i < keys.length; i++) {
+      const a = keys[i];
+      graph[a] = {};
+      for (let j = 0; j < keys.length; j++) {
+        if (i === j) continue;
+        const b = keys[j];
+        const dist = getDistance(nodes[a].lat, nodes[a].lng, nodes[b].lat, nodes[b].lng);
+        if (dist <= MAX_DISTANCE) {
+          graph[a][b] = dist;
         }
-      })
-      .catch(error => console.error('graph.json 불러오기 실패:', error));
+      }
+    }
+
+    // 4. 마커 생성 및 정보창
+    const markers = {};
+    let markersVisible = true;
+
+    for (const key in nodes) {
+      const pos = new kakao.maps.LatLng(nodes[key].lat, nodes[key].lng);
+      const marker = new kakao.maps.Marker({ map, position: pos });
+      const label = nodes[key].isCore ? `<b>핵심 ${key}</b>` : `노드 ${key}`;
+      const infowindow = new kakao.maps.InfoWindow({ content: `<div style="padding:5px;">${label}</div>` });
+      kakao.maps.event.addListener(marker, 'mouseover', () => infowindow.open(map, marker));
+      kakao.maps.event.addListener(marker, 'mouseout', () => infowindow.close());
+      markers[key] = marker;
+    }
+
+    function toggleMarkers() {
+      for (const key in markers) {
+        markers[key].setMap(markersVisible ? null : map);
+      }
+      markersVisible = !markersVisible;
+    }
+
+    // 5. 선 긋기
+    let polylines = [];
+    let linesVisible = true;
+
+    function drawLine(path, color = '#FF0000') {
+      const linePath = path.map(key => new kakao.maps.LatLng(nodes[key].lat, nodes[key].lng));
+      const polyline = new kakao.maps.Polyline({
+        path: linePath,
+        strokeWeight: 5,
+        strokeColor: color,
+        strokeOpacity: 0.8,
+        strokeStyle: 'solid'
+      });
+      polyline.setMap(linesVisible ? map : null);
+      polylines.push(polyline);
+    }
+
+    function clearLines() {
+      for (const line of polylines) {
+        line.setMap(null);
+      }
+      polylines = [];
+    }
+
+    function toggleLines() {
+      linesVisible = !linesVisible;
+      for (const line of polylines) {
+        line.setMap(linesVisible ? map : null);
+      }
+    }
+
+    // 6. 다익스트라 알고리즘
+    function runDijkstra(start, end) {
+      clearLines();
+      const distances = {}, previous = {};
+      const unvisited = Object.keys(nodes);
+      unvisited.forEach(n => distances[n] = Infinity);
+      distances[start] = 0;
+
+      while (unvisited.length > 0) {
+        unvisited.sort((a, b) => distances[a] - distances[b]);
+        const current = unvisited.shift();
+        if (current === end) break;
+
+        for (const neighbor in graph[current]) {
+          const newDist = distances[current] + graph[current][neighbor];
+          if (newDist < distances[neighbor]) {
+            distances[neighbor] = newDist;
+            previous[neighbor] = current;
+          }
+        }
+      }
+
+      const path = [];
+      let curr = end;
+      while (curr) {
+        path.unshift(curr);
+        curr = previous[curr];
+      }
+
+      const resultDiv = document.getElementById("result");
+      if (path[0] === start) {
+        resultDiv.innerHTML = `<h3>${start} → ${end} 최단 거리: ${distances[end]}m</h3>`;
+        drawLine(path);
+      } else {
+        resultDiv.innerHTML = `<h3>${start} → ${end} 경로를 찾을 수 없습니다.</h3>`;
+      }
+    }
+
+    function runDijkstraFromSelect() {
+      const start = document.getElementById("startNode").value;
+      const end = document.getElementById("endNode").value;
+      if (start === end) {
+        alert("출발과 도착 노드는 달라야 합니다.");
+        return;
+      }
+      runDijkstra(start, end);
+    }
+
+    // 7. 핵심 건물만 select 옵션에 추가
+    function initNodeSelects() {
+      const startSelect = document.getElementById("startNode");
+      const endSelect = document.getElementById("endNode");
+      for (const key in nodes) {
+        if (nodes[key].isCore) {
+          startSelect.appendChild(new Option(key, key));
+          endSelect.appendChild(new Option(key, key));
+        }
+      }
+    }
+
+    initNodeSelects();
   </script>
 </body>
 </html>
